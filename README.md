@@ -15,10 +15,13 @@ StallmanSight permite a los artistas seleccionar una imagen de referencia y supe
 
 ## Capturas de pantalla
 
-![17d8fea8-8005-4271-8999-bf8573a0faa9](https://github.com/Dgmtnz/StallmanSight/assets/53713954/6cb457de-aaf1-4890-9437-6d41249bf7eb)
-![100aaf68-8347-4230-bda7-7716f7fd1657](https://github.com/Dgmtnz/StallmanSight/assets/53713954/189df392-0d86-483a-a8b3-0a6acc7f524c)
-![308d8c39-be3b-4e0e-9b1a-2f0fe9c33cc3](https://github.com/Dgmtnz/StallmanSight/assets/53713954/1f40aa10-bd51-46e3-8766-a606103c7034)
-
+<table>
+  <tr>
+    <td><img src="https://github.com/Dgmtnz/StallmanSight/assets/53713954/6cb457de-aaf1-4890-9437-6d41249bf7eb" width="200"/></td>
+    <td><img src="https://github.com/Dgmtnz/StallmanSight/assets/53713954/189df392-0d86-483a-a8b3-0a6acc7f524c" width="200"/></td>
+    <td><img src="https://github.com/Dgmtnz/StallmanSight/assets/53713954/1f40aa10-bd51-46e3-8766-a606103c7034" width="200"/></td>
+  </tr>
+</table>
 
 ## Requisitos
 
