@@ -5,20 +5,18 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
-import android.view.Surface
-import android.view.TextureView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -32,29 +30,30 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import kotlin.math.PI
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
-    private lateinit var cameraManager: CameraManager
-    private var cameraDevice: CameraDevice? = null
-    private var textureView: TextureView? = null
+    private lateinit var cameraExecutor: ExecutorService
+    private var lensFacing by mutableStateOf(CameraSelector.LENS_FACING_BACK)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            openCamera()
+            Log.d("CameraXApp", "Permission granted")
         } else {
-            Log.e("MainActivity", "Camera permission denied")
+            Log.e("CameraXApp", "Permission denied")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        cameraExecutor = Executors.newSingleThreadExecutor()
 
         setContent {
             MaterialTheme {
@@ -71,6 +70,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun CameraPreviewWithOverlay() {
         val context = LocalContext.current
+        val lifecycleOwner = LocalLifecycleOwner.current
         var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
         var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
         var offsetX by remember { mutableStateOf(0f) }
@@ -84,148 +84,168 @@ class MainActivity : ComponentActivity() {
             onResult = { uri: Uri? ->
                 selectedImageUri = uri
                 uri?.let {
-                    selectedBitmap = if (Build.VERSION.SDK_INT < 28) {
-                        MediaStore.Images.Media.getBitmap(context.contentResolver, it)
-                    } else {
-                        val source = ImageDecoder.createSource(context.contentResolver, it)
-                        ImageDecoder.decodeBitmap(source)
-                    }
+                    selectedBitmap = loadBitmapFromUri(context, it)
                 }
             }
         )
 
         Box(modifier = Modifier.fillMaxSize()) {
-            AndroidView(
-                factory = { ctx ->
-                    TextureView(ctx).also { view ->
-                        textureView = view
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
+            // CameraX Preview
+            CameraPreview(
+                lensFacing = lensFacing,
+                lifecycleOwner = lifecycleOwner
             )
 
-            LaunchedEffect(textureView) {
-                textureView?.let {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        openCamera()
-                    } else {
-                        requestPermissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
-                }
+            // Imagen superpuesta
+            OverlayImage(selectedBitmap, offsetX, offsetY, scale, rotation, transparency) { dx, dy, newScale ->
+                offsetX += dx
+                offsetY += dy
+                scale *= newScale
             }
 
-            selectedBitmap?.let { bitmap ->
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Selected Image",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .offset(offsetX.dp, offsetY.dp)
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            rotationZ = rotation
+            // Controles de la interfaz
+            ControlPanel(
+                onSelectImage = { imagePicker.launch("image/*") },
+                onSwitchCamera = { switchCamera() },
+                transparency = transparency,
+                onTransparencyChange = { transparency = it },
+                rotation = rotation,
+                onRotationChange = { rotation = it }
+            )
+        }
+    }
+
+    @Composable
+    private fun CameraPreview(
+        lensFacing: Int,
+        lifecycleOwner: androidx.lifecycle.LifecycleOwner
+    ) {
+        val context = LocalContext.current
+        val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+
+        AndroidView(
+            factory = { ctx ->
+                val previewView = PreviewView(ctx)
+                val executor = ContextCompat.getMainExecutor(ctx)
+                cameraProviderFuture.addListener({
+                    val cameraProvider = cameraProviderFuture.get()
+
+                    val preview = Preview.Builder().build().also {
+                        it.setSurfaceProvider(previewView.surfaceProvider)
+                    }
+
+                    val cameraSelector = CameraSelector.Builder()
+                        .requireLensFacing(lensFacing)
+                        .build()
+
+                    try {
+                        cameraProvider.unbindAll()
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            cameraSelector,
+                            preview
                         )
-                        .alpha(transparency)
-                        .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                offsetX += pan.x
-                                offsetY += pan.y
-                                scale *= zoom
-                                //rotation += rotate * (180f / PI.toFloat())
-                            }
-                        },
-                    contentScale = ContentScale.Fit
-                )
-            }
+                    } catch (exc: Exception) {
+                        Log.e("CameraXApp", "Use case binding failed", exc)
+                    }
+                }, executor)
+                previewView
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+    }
 
-            Column(
+    @Composable
+    private fun OverlayImage(
+        bitmap: Bitmap?,
+        offsetX: Float,
+        offsetY: Float,
+        scale: Float,
+        rotation: Float,
+        transparency: Float,
+        onGesture: (Float, Float, Float) -> Unit
+    ) {
+        bitmap?.let { bmp ->
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "Selected Image",
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp)
-            ) {
-                Button(onClick = { imagePicker.launch("image/*") }) {
-                    Text("Select Image")
-                }
-
-                Slider(
-                    value = transparency,
-                    onValueChange = { transparency = it },
-                    valueRange = 0f..1f,
-                    modifier = Modifier.padding(top = 16.dp)
-                )
-
-                Slider(
-                    value = rotation,
-                    onValueChange = { rotation = it },
-                    valueRange = 0f..360f,
-                    modifier = Modifier.padding(top = 16.dp)
-                )
-            }
-        }
-    }
-
-    private fun openCamera() {
-        try {
-            val cameraId = cameraManager.cameraIdList[0]
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
-                    override fun onOpened(camera: CameraDevice) {
-                        cameraDevice = camera
-                        createCameraPreviewSession()
-                    }
-
-                    override fun onDisconnected(camera: CameraDevice) {
-                        cameraDevice?.close()
-                        cameraDevice = null
-                    }
-
-                    override fun onError(camera: CameraDevice, error: Int) {
-                        Log.e("MainActivity", "Camera error: $error")
-                        cameraDevice?.close()
-                        cameraDevice = null
-                    }
-                }, null)
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to open camera", e)
-        }
-    }
-
-    private fun createCameraPreviewSession() {
-        try {
-            val texture = textureView?.surfaceTexture
-            texture?.setDefaultBufferSize(1080, 1920) // Adjust as needed
-
-            val surface = texture?.let { Surface(it) }
-
-            val previewRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            surface?.let { previewRequestBuilder?.addTarget(it) }
-
-            surface?.let {
-                cameraDevice?.createCaptureSession(listOf(it), object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(session: CameraCaptureSession) {
-                        try {
-                            previewRequestBuilder?.let { builder ->
-                                session.setRepeatingRequest(builder.build(), null, null)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("MainActivity", "Failed to start camera preview", e)
+                    .fillMaxSize()
+                    .offset(offsetX.dp, offsetY.dp)
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        rotationZ = rotation
+                    )
+                    .alpha(transparency)
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            onGesture(pan.x, pan.y, zoom)
                         }
-                    }
+                    },
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
 
-                    override fun onConfigureFailed(session: CameraCaptureSession) {
-                        Log.e("MainActivity", "Failed to configure camera session")
-                    }
-                }, null)
+    @Composable
+    private fun ControlPanel(
+        onSelectImage: () -> Unit,
+        onSwitchCamera: () -> Unit,
+        transparency: Float,
+        onTransparencyChange: (Float) -> Unit,
+        rotation: Float,
+        onRotationChange: (Float) -> Unit
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Button(onClick = onSelectImage) {
+                Text("Select Image")
             }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to create camera preview session", e)
+
+            Button(onClick = onSwitchCamera) {
+                Text("Switch Camera")
+            }
+
+            Slider(
+                value = transparency,
+                onValueChange = onTransparencyChange,
+                valueRange = 0f..1f,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+
+            Slider(
+                value = rotation,
+                onValueChange = onRotationChange,
+                valueRange = 0f..360f,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+        }
+    }
+
+    private fun switchCamera() {
+        lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
+            CameraSelector.LENS_FACING_FRONT
+        } else {
+            CameraSelector.LENS_FACING_BACK
+        }
+    }
+
+    private fun loadBitmapFromUri(context: Context, uri: Uri): Bitmap {
+        return if (Build.VERSION.SDK_INT < 28) {
+            MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+        } else {
+            val source = ImageDecoder.createSource(context.contentResolver, uri)
+            ImageDecoder.decodeBitmap(source)
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        cameraDevice?.close()
+        cameraExecutor.shutdown()
     }
 }
