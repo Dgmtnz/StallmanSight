@@ -5,14 +5,13 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
+import android.hardware.camera2.*
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import androidx.activity.ComponentActivity
@@ -35,12 +34,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import kotlin.math.PI
+import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     private lateinit var cameraManager: CameraManager
     private var cameraDevice: CameraDevice? = null
     private var textureView: TextureView? = null
+    private var lensFacing = CameraCharacteristics.LENS_FACING_BACK
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -132,7 +132,6 @@ class MainActivity : ComponentActivity() {
                                 offsetX += pan.x
                                 offsetY += pan.y
                                 scale *= zoom
-                                //rotation += rotate * (180f / PI.toFloat())
                             }
                         },
                     contentScale = ContentScale.Fit
@@ -146,6 +145,10 @@ class MainActivity : ComponentActivity() {
             ) {
                 Button(onClick = { imagePicker.launch("image/*") }) {
                     Text("Select Image")
+                }
+
+                Button(onClick = { switchCamera() }) {
+                    Text("Switch Camera")
                 }
 
                 Slider(
@@ -165,9 +168,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun switchCamera() {
+        cameraDevice?.close()
+        lensFacing = if (lensFacing == CameraCharacteristics.LENS_FACING_BACK) {
+            CameraCharacteristics.LENS_FACING_FRONT
+        } else {
+            CameraCharacteristics.LENS_FACING_BACK
+        }
+        openCamera()
+    }
+
     private fun openCamera() {
         try {
-            val cameraId = cameraManager.cameraIdList[0]
+            val cameraId = cameraManager.cameraIdList.find { id ->
+                val characteristics = cameraManager.getCameraCharacteristics(id)
+                characteristics.get(CameraCharacteristics.LENS_FACING) == lensFacing
+            } ?: throw Exception("Camera not found")
+
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                 cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                     override fun onOpened(camera: CameraDevice) {
@@ -195,7 +212,15 @@ class MainActivity : ComponentActivity() {
     private fun createCameraPreviewSession() {
         try {
             val texture = textureView?.surfaceTexture
-            texture?.setDefaultBufferSize(1080, 1920) // Adjust as needed
+            val streamConfigurationMap = cameraManager.getCameraCharacteristics(cameraDevice?.id ?: "")
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val previewSizes = streamConfigurationMap?.getOutputSizes(SurfaceTexture::class.java)
+            val optimalSize = getOptimalPreviewSize(previewSizes, textureView?.width ?: 0, textureView?.height ?: 0)
+
+            optimalSize?.let { size ->
+                texture?.setDefaultBufferSize(size.width, size.height)
+                textureView?.layoutParams = FrameLayout.LayoutParams(size.width, size.height)
+            }
 
             val surface = texture?.let { Surface(it) }
 
@@ -222,6 +247,36 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e("MainActivity", "Failed to create camera preview session", e)
         }
+    }
+
+    private fun getOptimalPreviewSize(sizes: Array<Size>?, w: Int, h: Int): Size? {
+        if (sizes == null) return null
+
+        val ASPECT_TOLERANCE = 0.1
+        val targetRatio = w.toDouble() / h
+        var optimalSize: Size? = null
+        var minDiff = Double.MAX_VALUE
+
+        for (size in sizes) {
+            val ratio = size.width.toDouble() / size.height
+            if (abs(ratio - targetRatio) > ASPECT_TOLERANCE) continue
+            if (abs(size.height - h) < minDiff) {
+                optimalSize = size
+                minDiff = abs(size.height - h).toDouble()
+            }
+        }
+
+        if (optimalSize == null) {
+            minDiff = Double.MAX_VALUE
+            for (size in sizes) {
+                if (abs(size.height - h) < minDiff) {
+                    optimalSize = size
+                    minDiff = abs(size.height - h).toDouble()
+                }
+            }
+        }
+
+        return optimalSize
     }
 
     override fun onDestroy() {
