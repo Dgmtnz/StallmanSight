@@ -3,8 +3,8 @@ package com.example.richardstallmaneye
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.ImageDecoder
+import android.graphics.*
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.net.Uri
 import android.os.Build
@@ -14,6 +14,7 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -34,7 +35,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     private lateinit var cameraManager: CameraManager
@@ -212,14 +212,19 @@ class MainActivity : ComponentActivity() {
     private fun createCameraPreviewSession() {
         try {
             val texture = textureView?.surfaceTexture
-            val streamConfigurationMap = cameraManager.getCameraCharacteristics(cameraDevice?.id ?: "")
-                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val characteristics = cameraManager.getCameraCharacteristics(cameraDevice?.id ?: "")
+            val streamConfigurationMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val previewSizes = streamConfigurationMap?.getOutputSizes(SurfaceTexture::class.java)
-            val optimalSize = getOptimalPreviewSize(previewSizes, textureView?.width ?: 0, textureView?.height ?: 0)
+
+            val displaySize = Point()
+            windowManager.defaultDisplay.getSize(displaySize)
+            val screenAspectRatio = displaySize.x.toFloat() / displaySize.y
+
+            val optimalSize = chooseOptimalSize(previewSizes, screenAspectRatio)
 
             optimalSize?.let { size ->
                 texture?.setDefaultBufferSize(size.width, size.height)
-                textureView?.layoutParams = FrameLayout.LayoutParams(size.width, size.height)
+                configureTransform(size.width, size.height)
             }
 
             val surface = texture?.let { Surface(it) }
@@ -249,34 +254,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun getOptimalPreviewSize(sizes: Array<Size>?, w: Int, h: Int): Size? {
-        if (sizes == null) return null
-
-        val ASPECT_TOLERANCE = 0.1
-        val targetRatio = w.toDouble() / h
-        var optimalSize: Size? = null
-        var minDiff = Double.MAX_VALUE
-
-        for (size in sizes) {
-            val ratio = size.width.toDouble() / size.height
-            if (abs(ratio - targetRatio) > ASPECT_TOLERANCE) continue
-            if (abs(size.height - h) < minDiff) {
-                optimalSize = size
-                minDiff = abs(size.height - h).toDouble()
+    private fun chooseOptimalSize(sizes: Array<Size>?, targetAspectRatio: Float): Size? {
+        return sizes
+            ?.filter {
+                val ratio = it.width.toFloat() / it.height
+                Math.abs(ratio - targetAspectRatio) < 0.1 // Tolerancia de aspecto
             }
+            ?.maxByOrNull { it.width * it.height }
+            ?: sizes?.maxByOrNull { it.width * it.height }
+    }
+
+    private fun configureTransform(previewWidth: Int, previewHeight: Int) {
+        val matrix = Matrix()
+        val viewRect = RectF(0f, 0f, textureView?.width?.toFloat() ?: 0f, textureView?.height?.toFloat() ?: 0f)
+        val bufferRect = RectF(0f, 0f, previewHeight.toFloat(), previewWidth.toFloat())
+        val centerX = viewRect.centerX()
+        val centerY = viewRect.centerY()
+
+        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+        matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
+
+        val scale = Math.max(
+            viewRect.width() / bufferRect.width(),
+            viewRect.height() / bufferRect.height()
+        )
+        matrix.postScale(scale, scale, centerX, centerY)
+
+        if (Surface.ROTATION_90 == windowManager.defaultDisplay.rotation || Surface.ROTATION_270 == windowManager.defaultDisplay.rotation) {
+            matrix.postRotate(90 * (windowManager.defaultDisplay.rotation - 2).toFloat(), centerX, centerY)
         }
 
-        if (optimalSize == null) {
-            minDiff = Double.MAX_VALUE
-            for (size in sizes) {
-                if (abs(size.height - h) < minDiff) {
-                    optimalSize = size
-                    minDiff = abs(size.height - h).toDouble()
-                }
-            }
-        }
-
-        return optimalSize
+        textureView?.setTransform(matrix)
     }
 
     override fun onDestroy() {
