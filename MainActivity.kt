@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.*
-import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.net.Uri
 import android.os.Build
@@ -14,7 +13,6 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
-import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -35,6 +33,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     private lateinit var cameraManager: CameraManager
@@ -120,18 +120,26 @@ class MainActivity : ComponentActivity() {
                     contentDescription = "Selected Image",
                     modifier = Modifier
                         .fillMaxSize()
-                        .offset(offsetX.dp, offsetY.dp)
                         .graphicsLayer(
                             scaleX = scale,
                             scaleY = scale,
-                            rotationZ = rotation
+                            rotationZ = rotation,
+                            translationX = offsetX,
+                            translationY = offsetY
                         )
                         .alpha(transparency)
                         .pointerInput(Unit) {
-                            detectTransformGestures { _, pan, zoom, _ ->
-                                offsetX += pan.x
-                                offsetY += pan.y
+                            detectTransformGestures { _, pan, zoom, rotationChange ->
+                                val rotationInRadians = Math.toRadians(rotation.toDouble())
+                                val cosRotation = cos(rotationInRadians).toFloat()
+                                val sinRotation = sin(rotationInRadians).toFloat()
+                                
+                                // Aplicar rotación a la traslación
+                                offsetX += pan.x * cosRotation - pan.y * sinRotation
+                                offsetY += pan.x * sinRotation + pan.y * cosRotation
+                                
                                 scale *= zoom
+                                rotation += rotationChange
                             }
                         },
                     contentScale = ContentScale.Fit
@@ -215,7 +223,7 @@ class MainActivity : ComponentActivity() {
             val characteristics = cameraManager.getCameraCharacteristics(cameraDevice?.id ?: "")
             val streamConfigurationMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val previewSizes = streamConfigurationMap?.getOutputSizes(SurfaceTexture::class.java)
-
+            
             val displaySize = Point()
             windowManager.defaultDisplay.getSize(displaySize)
             val screenAspectRatio = displaySize.x.toFloat() / displaySize.y
@@ -256,7 +264,7 @@ class MainActivity : ComponentActivity() {
 
     private fun chooseOptimalSize(sizes: Array<Size>?, targetAspectRatio: Float): Size? {
         return sizes
-            ?.filter {
+            ?.filter { 
                 val ratio = it.width.toFloat() / it.height
                 Math.abs(ratio - targetAspectRatio) < 0.1 // Tolerancia de aspecto
             }
